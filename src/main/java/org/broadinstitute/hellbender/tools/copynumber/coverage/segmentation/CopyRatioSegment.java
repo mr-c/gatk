@@ -7,6 +7,7 @@ import org.broadinstitute.hellbender.utils.Utils;
 import org.broadinstitute.hellbender.utils.param.ParamUtils;
 
 import java.util.List;
+import java.util.function.Function;
 
 public class CopyRatioSegment implements Locatable {
     private final SimpleInterval interval;
@@ -29,8 +30,7 @@ public class CopyRatioSegment implements Locatable {
         Utils.nonNull(denoisedLog2CopyRatios);
         this.interval = interval;
         numPoints = denoisedLog2CopyRatios.size();
-        final double meanCopyRatio = denoisedLog2CopyRatios.stream().mapToDouble(log2CR -> Math.pow(2., log2CR)).average().orElse(Double.NaN);
-        meanLog2CopyRatio = Math.log(meanCopyRatio) * GATKProtectedMathUtils.INV_LOG_2;
+        meanLog2CopyRatio = denoisedLog2CopyRatios.stream().mapToDouble(x -> x).average().orElse(Double.NaN);
     }
 
     @Override
