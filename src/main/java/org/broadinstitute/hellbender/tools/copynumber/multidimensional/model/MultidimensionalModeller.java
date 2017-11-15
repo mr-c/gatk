@@ -238,7 +238,7 @@ public final class MultidimensionalModeller {
 
         //checks similarity of posterior summaries to within a credible-interval threshold;
         //posterior summaries are similar if the difference between posterior central tendencies is less than
-        //intervalThreshold times the credible-interval width of either summary
+        //intervalThreshold times the credible-interval width for both summaries
         private static boolean areSimilar(final ModeledSegment.SimplePosteriorSummary summary1,
                                           final ModeledSegment.SimplePosteriorSummary summary2,
                                           final double intervalThreshold) {
@@ -246,7 +246,7 @@ public final class MultidimensionalModeller {
                 return true;
             }
             final double absoluteDifference = Math.abs(summary1.getDecile50() - summary2.getDecile50());
-            return absoluteDifference < intervalThreshold * (summary1.getDecile90() - summary1.getDecile10()) ||
+            return absoluteDifference < intervalThreshold * (summary1.getDecile90() - summary1.getDecile10()) &&
                     absoluteDifference < intervalThreshold * (summary2.getDecile90() - summary2.getDecile10());
         }
 
