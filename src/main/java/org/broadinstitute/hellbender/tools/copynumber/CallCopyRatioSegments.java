@@ -64,7 +64,7 @@ public final class CallCopyRatioSegments extends CommandLineProgram {
             shortName = NEUTRAL_SEGMENT_COPY_RATIO_THRESHOLD_SHORT_NAME,
             optional = true
     )
-    private double neutralSegmentCopyRatioThreshold = 0.15;
+    private double neutralSegmentCopyRatioThreshold = 0.1;
 
     @Argument(
             doc = "Threshold on z-score of non-log2 copy ratio used for determining outlier copy-neutral segments.  " +

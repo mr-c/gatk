@@ -318,7 +318,7 @@ task CallCopyRatioSegments {
     command {
         java -Xmx${default="4" mem}g -jar ${gatk_jar} CallCopyRatioSegments \
             --input ${copy_ratio_segments} \
-            --neutralSegmentCopyRatioThreshold ${default="0.15" neutral_segment_copy_ratio_threshold} \
+            --neutralSegmentCopyRatioThreshold ${default="0.1" neutral_segment_copy_ratio_threshold} \
             --outlierNeutralSegmentCopyRatioZScoreThreshold ${default="2.0" outlier_neutral_segment_copy_ratio_z_score_threshold} \
             --callingCopyRatioZScoreThreshold ${default="2.0" calling_copy_ratio_z_score_threshold} \
             --output ${entity_id}.called.seg

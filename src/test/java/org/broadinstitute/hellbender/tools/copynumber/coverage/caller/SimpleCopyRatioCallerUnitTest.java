@@ -21,7 +21,7 @@ import java.util.stream.Collectors;
 import static org.broadinstitute.hellbender.tools.copynumber.coverage.caller.CalledCopyRatioSegment.Call.*;
 
 public final class SimpleCopyRatioCallerUnitTest extends GATKBaseTest {
-    private static final double NEUTRAL_SEGMENT_COPY_RATIO_THRESHOLD = 0.15;
+    private static final double NEUTRAL_SEGMENT_COPY_RATIO_THRESHOLD = 0.1;
     private static final double OUTLIER_NEUTRAL_SEGMENT_COPY_RATIO_Z_SCORE_THRESHOLD = 2.;
     private static final double CALLING_COPY_RATIO_Z_SCORE_THRESHOLD = 2.;
 
