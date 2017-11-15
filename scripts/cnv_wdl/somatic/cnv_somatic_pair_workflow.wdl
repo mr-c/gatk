@@ -263,7 +263,7 @@ task ModelSegments {
             --genotypingHomozygousLogRatioThreshold ${default="-10.0" genotyping_homozygous_log_ratio_threshold} \
             --genotypingBaseErrorRate ${default="0.05" genotyping_base_error_rate} \
             --kernelVarianceCopyRatio ${default="0.0" kernel_variance_copy_ratio} \
-            --kernelVarianceAlleleFraction ${default="0.01" kernel_variance_allele_fraction} \
+            --kernelVarianceAlleleFraction ${default="0.025" kernel_variance_allele_fraction} \
             --kernelScalingAlleleFraction ${default="1.0" kernel_scaling_allele_fraction} \
             --kernelApproximationDimension ${default="100" kernel_approximation_dimension} \
             --windowSize ${sep= " --windowSize " window_sizes} \
