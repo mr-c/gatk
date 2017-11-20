@@ -114,7 +114,7 @@ workflow CNVGermlinePanelWorkflow {
       gatk_docker = gatk_docker
   } 
 
-  call GermlineCNVCaller {
+  call GermlineCNVCallerSpark {
     input:
       coverage = CorrectGCBias.corrected_coverage,
       contig_ploidy_annotations = contig_ploidy_annotations,
@@ -128,9 +128,9 @@ workflow CNVGermlinePanelWorkflow {
   }
 
   output {
-    Array[File] posteriors = GermlineCNVCaller.posteriors
-    Array[File] model = GermlineCNVCaller.model
-    Array[File] segments = GermlineCNVCaller.segments
+    Array[File] posteriors = GermlineCNVCallerSpark.posteriors
+    Array[File] model = GermlineCNVCallerSpark.model
+    Array[File] segments = GermlineCNVCallerSpark.segments
   }
 }
 
@@ -167,7 +167,7 @@ task CombineReadCounts {
 }
   
 # Learn the coverage model
-task GermlineCNVCaller {
+task GermlineCNVCallerSpark {
     File coverage
     File contig_ploidy_annotations
     File sex_genotypes
@@ -184,7 +184,7 @@ task GermlineCNVCaller {
     Int? disk_space_gb
 
     command {
-        java -Xmx${default=4 mem}g -Ddtype=double -jar ${gatk_jar} GermlineCNVCaller \
+        java -Xmx${default=4 mem}g -Ddtype=double -jar ${gatk_jar} GermlineCNVCallerSpark \
             --input ${coverage} \
             --contigAnnotationsTable ${contig_ploidy_annotations} \
             --sexGenotypeTable ${sex_genotypes} \
