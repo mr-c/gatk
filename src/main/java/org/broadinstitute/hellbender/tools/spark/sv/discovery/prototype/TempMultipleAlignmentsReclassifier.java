@@ -1,6 +1,9 @@
 package org.broadinstitute.hellbender.tools.spark.sv.discovery.prototype;
 
-import org.apache.spark.api.java.JavaPairRDD;
+import com.esotericsoftware.kryo.DefaultSerializer;
+import com.esotericsoftware.kryo.Kryo;
+import com.esotericsoftware.kryo.io.Input;
+import com.esotericsoftware.kryo.io.Output;
 import org.apache.spark.api.java.JavaRDD;
 import org.broadinstitute.hellbender.tools.spark.sv.discovery.AlignedContig;
 import org.broadinstitute.hellbender.tools.spark.sv.discovery.AlignmentInterval;
@@ -8,8 +11,6 @@ import org.broadinstitute.hellbender.tools.spark.sv.utils.RDDUtils;
 import org.broadinstitute.hellbender.utils.SimpleInterval;
 import org.broadinstitute.hellbender.utils.Utils;
 import scala.Tuple2;
-import scala.Tuple3;
-import scala.Tuple4;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -17,110 +18,210 @@ import java.util.stream.Collectors;
 // TODO: 10/30/17 temporary class later to be merged to AssemblyContigAlignmentSignatureClassifier.java after #3752 is in
 final class TempMultipleAlignmentsReclassifier {
 
-    // =================================================================================================================
+    @DefaultSerializer(AssemblyContigWithFineTunedAlignments.Serializer.class)
+    static final class AssemblyContigWithFineTunedAlignments {
+        private static final AlignedContig.Serializer contigSerializer = new AlignedContig.Serializer();
+        final AlignedContig updatedContig;
+        final List<String> insertionMappings;
 
-    /**
-     * Reclassify assembly contigs based on alignment fine tuning.
-     * @return 4 classes:
-     *          1) non-informative contigs who after fine tuning has 0 or 1 good alignment left
-     *          2) contigs with more than 2 good alignments but doesn't seem to have picture complete as defined by {@link #hasIncomePicture(AlignedContig)}
-     *          3) contigs with 2 good alignments and bad alignments encoded as strings
-     *          4) contigs with more than 2 good alignments and seemingly have picture complete as defined by {@link #hasIncomePicture(AlignedContig)}
-     */
-    static Tuple4<JavaRDD<AlignedContig>, JavaRDD<AlignedContig>, JavaPairRDD<AlignedContig, List<String>>, JavaPairRDD<AlignedContig, List<String>>>
-    reClassifyContigsWithMultipleAlignments(final JavaRDD<AlignedContig> localAssemblyContigs,
-                                            final int mapQThresholdInclusive, final int uniqReadLenInclusive) {
+        AssemblyContigWithFineTunedAlignments(final AlignedContig updatedContig,
+                                              final List<String> insertionMappings) {
+            this.updatedContig = updatedContig;
+            this.insertionMappings = Utils.nonNull(insertionMappings);
+        }
 
-        final JavaRDD<Tuple3<Boolean, AlignedContig, List<String>>> map = localAssemblyContigs.map(tig -> {
-            final Tuple2<List<AlignmentInterval>, List<AlignmentInterval>> goodAndBadAlignments =
-                    fineTuneAlignments(tig.alignmentIntervals, mapQThresholdInclusive, uniqReadLenInclusive);
-            final List<AlignmentInterval> goodAlignments = goodAndBadAlignments._1;
-            final List<String> insertionMappings =
-                    goodAndBadAlignments._2.stream().map(AlignmentInterval::toPackedString).collect(Collectors.toList());
-            return new Tuple3<>(goodAlignments.size() < 2, // after fine tuning, a contig may have no good alignment left, or only 1
-                    new AlignedContig(tig.contigName, tig.contigSequence, goodAlignments, tig.hasEquallyGoodAlnConfigurations),
-                    insertionMappings);
-        });
+        AssemblyContigWithFineTunedAlignments(final Kryo kryo, final Input input) {
+            updatedContig = contigSerializer.read(kryo, input, AlignedContig.class);
+            final int insertionMappingsSize = input.readInt();
+            insertionMappings = new ArrayList<>(insertionMappingsSize);
+            if (insertionMappingsSize != 0) {
+                for (int i = 0; i < insertionMappingsSize; ++i) {
+                    insertionMappings.add(input.readString());
+                }
+            }
+        }
 
-        // 1st class
-        final Tuple2<JavaRDD<Tuple3<Boolean, AlignedContig, List<String>>>, JavaRDD<Tuple3<Boolean, AlignedContig, List<String>>>> split =
-                RDDUtils.split(map, TempMultipleAlignmentsReclassifier::isNonInformative, false);
-        final JavaRDD<AlignedContig> garbage = split._1.map(Tuple3::_2);
+        // after fine tuning, a contig may have no good alignment left, or only 1
+        final boolean isInformative() {
+            return updatedContig.alignmentIntervals.size() > 1;
+        }
 
-        // 3rd class
-        final Tuple2<JavaRDD<Tuple3<Boolean, AlignedContig, List<String>>>, JavaRDD<Tuple3<Boolean, AlignedContig, List<String>>>> split1 =
-                RDDUtils.split(split._2, TempMultipleAlignmentsReclassifier::hasOnly2Alignments, false);
-        final JavaPairRDD<AlignedContig, List<String>> twoAlignments =
-                split1._1.mapToPair(tuple3 -> new Tuple2<>(tuple3._2(), tuple3._3()));
+        final boolean hasIncomePicture() {
+            Utils.validateArg(updatedContig.alignmentIntervals.size() > 2,
+                    "assumption that input contig has more than 2 alignments is violated.\n" +
+                            updatedContig.toString());
 
-        // 2nd and 4th classes
-        final JavaPairRDD<AlignedContig, List<String>> multipleAlignments =
-                split1._2.mapToPair(tuple3 -> new Tuple2<>(tuple3._2(), tuple3._3()));
-        final JavaPairRDD<AlignedContig, List<String>> multipleAlignmentsIncompletePicture =
-                multipleAlignments.filter(pair -> hasIncomePicture(pair._1));
-        final JavaPairRDD<AlignedContig, List<String>> multipleAlignmentsCompletePicture =
-                multipleAlignments.filter(pair -> !hasIncomePicture(pair._1));
+            final AlignmentInterval head = updatedContig.alignmentIntervals.get(0),
+                                    tail = updatedContig.alignmentIntervals.get(updatedContig.alignmentIntervals.size()-1);
 
-        return new Tuple4<>(garbage, multipleAlignmentsIncompletePicture.keys(),
-                twoAlignments, multipleAlignmentsCompletePicture);
-    }
+            // tail not resuming the "direction of flow" started by head
+            if ( !head.referenceSpan.getContig().equals(tail.referenceSpan.getContig()) || head.forwardStrand != tail.forwardStrand)
+                return true;
 
-    private static boolean hasIncomePicture(final AlignedContig contigWithMultipleAlignments) {
-        Utils.validateArg(contigWithMultipleAlignments.alignmentIntervals.size() > 2,
-                "assumption that input contig has more than 2 alignments is violated.\n" +
-                        contigWithMultipleAlignments.toString());
+            // reference span anomaly
+            final SimpleInterval referenceSpanHead = head.referenceSpan,
+                                 referenceSpanTail = tail.referenceSpan;
+            if (referenceSpanHead.contains(referenceSpanTail) || referenceSpanTail.contains(referenceSpanHead))
+                return true;
 
-        final AlignmentInterval head = contigWithMultipleAlignments.alignmentIntervals.get(0),
-                                tail = contigWithMultipleAlignments.alignmentIntervals.get(contigWithMultipleAlignments.alignmentIntervals.size()-1);
+            final boolean refSpanAnomaly =
+                    updatedContig.alignmentIntervals
+                            .subList(1, updatedContig.alignmentIntervals.size() - 1)
+                            .stream().map(ai -> ai.referenceSpan)
+                            .anyMatch( middle -> { // middle alignments' ref span either disjoint from head/tail, or completely contained in head/tail ref span
+                                final boolean badHead = middle.overlaps(referenceSpanHead) && !referenceSpanHead.contains(middle);
+                                final boolean badTail = middle.overlaps(referenceSpanTail) && !referenceSpanTail.contains(middle);
+                                return badHead || badTail;
+                            });
+            if (refSpanAnomaly)
+                return true;
 
-        // tail not resuming the "direction of flow" started by head
-        if ( !head.referenceSpan.getContig().equals(tail.referenceSpan.getContig()) || head.forwardStrand != tail.forwardStrand)
-            return true;
+            if (head.forwardStrand) {
+                return referenceSpanHead.getStart() >= referenceSpanTail.getStart();
+            } else {
+                return referenceSpanHead.getEnd() <= referenceSpanHead.getEnd();
+            }
+        }
 
-        // reference span anomaly
-        final SimpleInterval referenceSpanHead = head.referenceSpan,
-                             referenceSpanTail = tail.referenceSpan;
-        if (referenceSpanHead.contains(referenceSpanTail) || referenceSpanTail.contains(referenceSpanHead))
-            return true;
+        void serialize(final Kryo kryo, final Output output) {
+            contigSerializer.write(kryo, output, updatedContig);
+            output.writeInt(insertionMappings.size());
+            for (final String mapping : insertionMappings) {
+                output.writeString(mapping);
+            }
+        }
 
-        final boolean refSpanAnomaly =
-                contigWithMultipleAlignments.alignmentIntervals
-                        .subList(1, contigWithMultipleAlignments.alignmentIntervals.size() - 1)
-                        .stream().map(ai -> ai.referenceSpan)
-                        .anyMatch( middle -> { // middle alignments' ref span either disjoint from head/tail, or completely contained in head/tail ref span
-                            final boolean badHead = middle.overlaps(referenceSpanHead) && !referenceSpanHead.contains(middle);
-                            final boolean badTail = middle.overlaps(referenceSpanTail) && !referenceSpanTail.contains(middle);
-                            return badHead || badTail;
-                        });
-        if (refSpanAnomaly)
-            return true;
+        public static final class Serializer extends com.esotericsoftware.kryo.Serializer<AssemblyContigWithFineTunedAlignments> {
+            @Override
+            public void write(final Kryo kryo, final Output output, final AssemblyContigWithFineTunedAlignments alignedContig) {
+                alignedContig.serialize(kryo, output);
+            }
 
-        if (head.forwardStrand) {
-            return referenceSpanHead.getStart() >= referenceSpanTail.getStart();
-        } else {
-            return referenceSpanHead.getEnd() <= referenceSpanHead.getEnd();
+            @Override
+            public AssemblyContigWithFineTunedAlignments read(final Kryo kryo, final Input input, final Class<AssemblyContigWithFineTunedAlignments> clazz) {
+                return new AssemblyContigWithFineTunedAlignments(kryo, input);
+            }
         }
     }
 
-    private static boolean isNonInformative(final Tuple3<Boolean, AlignedContig, List<String>> tigInfo) {
-        return tigInfo._1();
+    /**
+     * convenience struct holding 4 classes:
+     *      1) non-informative contigs who after fine tuning has 0 or 1 good alignment left
+     *      2) contigs with more than 2 good alignments but doesn't seem to have picture complete as defined by
+     *          {@link AssemblyContigWithFineTunedAlignments#hasIncomePicture()}
+     *      3) contigs with 2 good alignments and bad alignments encoded as strings
+     *      4) contigs with more than 2 good alignments and seemingly have picture complete as defined by
+     *          {@link AssemblyContigWithFineTunedAlignments#hasIncomePicture()}
+     */
+    private static final class MultipleAlignmentReclassificationResults {
+        final JavaRDD<AssemblyContigWithFineTunedAlignments> nonInformativeContigs;
+        final JavaRDD<AssemblyContigWithFineTunedAlignments> contigsWithMoreThanTwoGoodAlignments;
+        final JavaRDD<AssemblyContigWithFineTunedAlignments> contigsWithTwoGoodAlignments;
+        final JavaRDD<AssemblyContigWithFineTunedAlignments> contigsWithMoreThanTwoGoodAlignmentsButIncompletePicture;
+        MultipleAlignmentReclassificationResults(final JavaRDD<AssemblyContigWithFineTunedAlignments> nonInformativeContigs,
+                                                 final JavaRDD<AssemblyContigWithFineTunedAlignments> contigsWithMoreThanTwoGoodAlignments,
+                                                 final JavaRDD<AssemblyContigWithFineTunedAlignments> contigsWithTwoGoodAlignments,
+                                                 final JavaRDD<AssemblyContigWithFineTunedAlignments> contigsWithMoreThanTwoGoodAlignmentsButIncompletePicture) {
+            this.nonInformativeContigs = nonInformativeContigs;
+            this.contigsWithMoreThanTwoGoodAlignments = contigsWithMoreThanTwoGoodAlignments;
+            this.contigsWithTwoGoodAlignments = contigsWithTwoGoodAlignments;
+            this.contigsWithMoreThanTwoGoodAlignmentsButIncompletePicture = contigsWithMoreThanTwoGoodAlignmentsButIncompletePicture;
+        }
     }
 
-    private static boolean hasOnly2Alignments(final Tuple3<Boolean, AlignedContig, List<String>> tigInfo) {
-        return tigInfo._2().alignmentIntervals.size() == 2;
-    }
+    // =================================================================================================================
 
     /**
-     * Preprocess provided {@code originalConfiguration} of a particular contig and return a configuration after operation.
-     * Note that "original" is meant to be possibly different from the returned configuration,
-     * but DOES NOT mean the alignments of the contig as given by the aligner, i.e. the configuration should be
-     * one of the best given by {@link FilterLongReadAlignmentsSAMSpark#pickBestConfigurations(AlignedContig, Set, Double)}.
-     *
-     * Note that the configuration after this preprocessing may not even have the same number of alignment as in input configuration.
+     * Reclassify assembly contigs based on alignment fine tuning as implemented in
+     * {@link #removeNonUniqueMappings(List, int, int)}.
      */
-    static Tuple2<List<AlignmentInterval>, List<AlignmentInterval>> fineTuneAlignments(final List<AlignmentInterval> originalConfiguration,
-                                                                                       final int mapQThresholdInclusive,
-                                                                                       final int uniqReadLenInclusive) {
+    static MultipleAlignmentReclassificationResults reClassifyContigsWithMultipleAlignments(
+            final JavaRDD<AlignedContig> localAssemblyContigs,
+            final int mapQThresholdInclusive, final int uniqReadLenInclusive) {
+
+        final JavaRDD<AssemblyContigWithFineTunedAlignments> contigsWithFineTunedAlignments =
+                localAssemblyContigs
+                        .map(tig -> {
+                            final Tuple2<List<AlignmentInterval>, List<AlignmentInterval>> goodAndBadAlignments =
+                                    removeNonUniqueMappings(tig.alignmentIntervals, mapQThresholdInclusive, uniqReadLenInclusive);
+                            final List<AlignmentInterval> goodAlignments = goodAndBadAlignments._1;
+                            final List<String> insertionMappings =
+                                    goodAndBadAlignments._2.stream().map(AlignmentInterval::toPackedString).collect(Collectors.toList());
+
+                            return
+                                    new AssemblyContigWithFineTunedAlignments(
+                                            new AlignedContig(tig.contigName, tig.contigSequence, goodAlignments,
+                                                    tig.hasEquallyGoodAlnConfigurations),
+                                            insertionMappings);
+                        });
+
+        // first take down non-informative assembly contigs
+        final Tuple2<JavaRDD<AssemblyContigWithFineTunedAlignments>, JavaRDD<AssemblyContigWithFineTunedAlignments>> informativeAndNotSo =
+                RDDUtils.split(contigsWithFineTunedAlignments, TempMultipleAlignmentsReclassifier::isInformative, false);
+        final JavaRDD<AssemblyContigWithFineTunedAlignments> garbage = informativeAndNotSo._2;
+
+        // assembly contigs with 2 good alignments and bad alignments encoded as strings
+        final JavaRDD<AssemblyContigWithFineTunedAlignments> informativeContigs = informativeAndNotSo._1;
+        final Tuple2<JavaRDD<AssemblyContigWithFineTunedAlignments>, JavaRDD<AssemblyContigWithFineTunedAlignments>> split =
+                RDDUtils.split(informativeContigs, TempMultipleAlignmentsReclassifier::hasOnly2GoodAlignments, false);
+        final JavaRDD<AssemblyContigWithFineTunedAlignments> twoGoodAlignments = split._1;
+
+        // assembly contigs with more than 2 good alignments: without and with a complete picture
+        final JavaRDD<AssemblyContigWithFineTunedAlignments> multipleAlignments = split._2;
+        final Tuple2<JavaRDD<AssemblyContigWithFineTunedAlignments>, JavaRDD<AssemblyContigWithFineTunedAlignments>> split1 =
+                RDDUtils.split(multipleAlignments, TempMultipleAlignmentsReclassifier::hasIncomePicture, false);
+        final JavaRDD<AssemblyContigWithFineTunedAlignments> multipleAlignmentsIncompletePicture = split1._1;
+        final JavaRDD<AssemblyContigWithFineTunedAlignments> multipleAlignmentsCompletePicture = split1._2;
+
+        return new MultipleAlignmentReclassificationResults(garbage, multipleAlignmentsIncompletePicture,
+                twoGoodAlignments, multipleAlignmentsCompletePicture);
+    }
+
+    // below are dummy predicates
+
+    private static boolean isInformative(final AssemblyContigWithFineTunedAlignments contig) {
+        return contig.isInformative();
+    }
+
+    private static boolean hasOnly2GoodAlignments(final AssemblyContigWithFineTunedAlignments contig) {
+        return contig.updatedContig.alignmentIntervals.size() == 2;
+    }
+
+    private static boolean hasIncomePicture(final AssemblyContigWithFineTunedAlignments contig) {
+        return contig.hasIncomePicture();
+    }
+
+    // =================================================================================================================
+
+    /**
+     * Process provided {@code originalConfiguration} of an assembly contig and split between good and bad alignments.
+     * The returned pair has good alignments as its first (i.e. updated configuration),
+     * and bad ones as its second (could be used for, e.g. annotate mappings of inserted sequence).
+     *
+     * <p>
+     *     What is considered good and bad?
+     *     For a particular mapping/alignment, it may offer low uniqueness in two sense:
+     *     <ul>
+     *         <li>
+     *             low REFERENCE UNIQUENESS: meaning the sequence being mapped to match multiple locations on the reference;
+     *         </li>
+     *         <li>
+     *             low READ UNIQUENESS: with only a very short part of the read being uniquely explained by this particular alignment;
+     *         </li>
+     *     </ul>
+     *     Good alignments offer both high reference uniqueness and read uniqueness, as judged by the requested
+     *     {@code mapQThresholdInclusive} and {@code uniqReadLenInclusive}
+     *     (yes we are doing a hard-filtering but more advanced model is not our priority right now 2017-11-20).
+     * </p>
+     *
+     * Note that "original" is meant to be possibly different from the returned configuration,
+     * but DOES NOT mean the alignments of the contig as given by the aligner,
+     * i.e. the configuration should be one of the best given by
+     * {@link FilterLongReadAlignmentsSAMSpark#pickBestConfigurations(AlignedContig, Set, Double)}.
+     */
+    static Tuple2<List<AlignmentInterval>, List<AlignmentInterval>> removeNonUniqueMappings(final List<AlignmentInterval> originalConfiguration,
+                                                                                            final int mapQThresholdInclusive,
+                                                                                            final int uniqReadLenInclusive) {
         Utils.validateArg(originalConfiguration.size() > 2,
                 "assumption that input configuration to be fine tuned has more than 2 alignments is violated.\n" +
                         originalConfiguration.stream().map(AlignmentInterval::toPackedString).collect(Collectors.toList()));
@@ -141,7 +242,8 @@ final class TempMultipleAlignmentsReclassifier {
         // second pass, the slower one, is to remove alignments offering low READ UNIQUENESS,
         // i.e. with only a very short part of the read being uniquely explained by this particular alignment;
         // the steps are:
-        //      search bi-directionally until cannot find overlap any more, subtract from it all overlaps.
+        //      search bi-directionally until cannot find overlap any more,
+        //      subtract the overlap from the distance covered on the contig by the alignment.
         //      This gives unique read region it explains.
         //      If this unique read region is "short": shorter than {@code uniqReadLenInclusive}), drop it.
 
@@ -192,9 +294,9 @@ final class TempMultipleAlignmentsReclassifier {
                 if (overlap > 0) {
                     maxOverlap = Math.max(maxOverlap, overlap);
                     maxOverlapIdx = j;
-                }
-                else // following ones, as guaranteed by the ordering of alignments in the contig, cannot overlap
+                } else { // following ones, as guaranteed by the ordering of alignments in the contig, cannot overlap
                     break;
+                }
             }
             if (maxOverlap > 0){
                 // first set the max_overlap_rear of the current alignment
